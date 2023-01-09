@@ -1,10 +1,9 @@
-use nix::sys::eventfd;
 use std::sync::{Arc, Mutex};
 
 pub struct DepChainV {
     complete: bool,
     waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
-    complete_callbacks: Vec<Box<dyn FnOnce() + Send>>,
+    complete_callbacks: Vec<Vec<crate::traverse::TaskPostProc>>,
 }
 
 impl DepChainV {
@@ -44,7 +43,7 @@ impl DepChain {
         }
     }
 
-    pub fn notify_complete(&self) {
+    pub fn notify_complete(&self)->Result<(),crate::error::E> {
         let mut v = self.v.lock().unwrap();
         v.complete = true;
         if let Some(b) = &v.waiter {
@@ -52,20 +51,22 @@ impl DepChain {
             b.wait();
         }
 
-        while let Some(f) = v.complete_callbacks.pop() {
-            f()
+        let mut v2 = Vec::new();
+        std::mem::swap(&mut v2, &mut v.complete_callbacks);
+        for t in v2.into_iter() {
+            crate::traverse::postproc(t)?;
         }
+
+        Ok(())
     }
 
-    pub fn add_complete_callback<F>(&self, f: F)
-    where
-        F: FnOnce() + Send + 'static,
+    pub fn add_complete_postproc(&self, t: Vec<crate::traverse::TaskPostProc>)
     {
         let mut v = self.v.lock().unwrap();
         if v.complete {
-            f();
+            crate::traverse::postproc(t);
         } else {
-            v.complete_callbacks.push(Box::new(f));
+            v.complete_callbacks.push(t);
         }
     }
 }

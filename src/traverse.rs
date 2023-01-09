@@ -7,7 +7,6 @@ use crossbeam::channel::{Receiver, Sender};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::io::Write;
-use std::fs::{read_dir, ReadDir};
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -15,26 +14,33 @@ pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
 }
 
-enum TaskPostProc {
+pub enum TaskPostProc {
     Show(OsString),
+    DepChain(DepChain),
 }
 
-fn run_postproc_task(t: TaskPostProc) {
+pub fn run_postproc_task(t: TaskPostProc) -> Result<(),error::E> {
     match t {
         TaskPostProc::Show(s) => {
             let mut v = s.into_vec();
             v.push(b'\n');
-            std::io::stdout().write_all(v.as_slice());
+            error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
+        },
+        TaskPostProc::DepChain(d) => {
+            d.notify_complete()?;
         }
     }
+
+    Ok(())
 }
 
-fn push_postproc(dep_pred: &Option<DepChain>, postprocs: &mut Vec<TaskPostProc>, t: TaskPostProc) {
+fn push_postproc(dep_pred: &Option<DepChain>, postprocs: &mut Vec<TaskPostProc>, t: TaskPostProc) -> Result<(),error::E> {
     if dep_pred.is_some() {
         postprocs.push(t);
     } else {
-        run_postproc_task(t);
+        run_postproc_task(t)?;
     }
+    Ok(())
 }
 
 fn traverse_dir(
@@ -67,40 +73,62 @@ fn traverse_dir(
                 entries.sort_by(|l, r| l.file_name().cmp(r.file_name()));
             }
 
+
             for e in entries {
                 let t = e.file_type().unwrap();
                 match t {
                     nix::dir::Type::File => {
-                        let abspath = d.entry_abspath(&e);
-                        let path_str = abspath.into_os_string();
-
                         if opts.method == crate::options::Method::List {
-                            push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str));
+                            let abspath = d.entry_abspath(&e);
+                            let path_str = abspath.into_os_string();
+                            push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
                         }
                     }
                     nix::dir::Type::Directory => {
-                        dep_pred = traverse_dir(
-                            opts,
-                            &free_thread_queue_rx,
-                            Some(&d),
-                            crate::pathstr::entry_to_path(&e),
-                            dep_pred,
-                            &mut postprocs,
-                        )?;
+                        if opts.method == crate::options::Method::List {
+                            let abspath = d.entry_abspath(&e);
+                            let path_str = abspath.clone().into_os_string();
+                            push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
+                        }
 
-                        //                let nt = free_thread_queue_rx.try_recv();
-                        //
-                        //                match nt {
-                        //                    Ok(nt) => {
-                        //                    },
-                        //                    Err(_) => {  // traverse by own thread
-                        //                        dep_pred = traverse_dir(opts,
-                        //                                                &free_thread_queue_rx,
-                        //                                                Some(& d),
-                        //                                                crate::pathstr::entry_to_path(&e),
-                        //                                                dep_pred,
-                        //                                                &mut postprocs)?;
-                        //                    },
+                        let nt = free_thread_queue_rx.try_recv();
+
+                        match nt {
+                            Ok(t) => {
+                                let mut postprocs2 = Vec::new();
+                                std::mem::swap(&mut postprocs2, &mut postprocs);
+
+                                if let Some(d) = & dep_pred {
+                                    d.add_complete_postproc(postprocs2);
+                                } else {
+                                    postproc(postprocs2)?;
+                                }
+
+                                let next_dep = events::DepChain::new();
+
+                                let read_child = Task::ReadDir {
+                                    parent_dir: Some(d.clone()),
+                                    path: crate::pathstr::entry_to_path(&e).to_owned(),
+                                    dep_pred,
+                                    dep_succ: next_dep.clone(),
+                                };
+
+                                t.send(read_child).unwrap();
+
+                                dep_pred = Some(next_dep);
+                            },
+
+                            Err(_) => { // traverse in own thread
+                                dep_pred = traverse_dir(
+                                    opts,
+                                    &free_thread_queue_rx,
+                                    Some(&d),
+                                    crate::pathstr::entry_to_path(&e),
+                                    dep_pred,
+                                    &mut postprocs,
+                                )?;
+                            },
+                        }
                     }
                     _ => {}
                 }
@@ -111,10 +139,11 @@ fn traverse_dir(
     Ok(dep_pred)
 }
 
-fn postproc(p: Vec<TaskPostProc>) {
+pub fn postproc(p: Vec<TaskPostProc>) -> Result<(),error::E> {
     for v in p {
-        run_postproc_task(v);
+        run_postproc_task(v)?;
     }
+    Ok(())
 }
 
 fn run_1task(
@@ -123,6 +152,7 @@ fn run_1task(
     free_thread_queue_rx: &Receiver<Sender<Task>>,
 ) -> Result<bool, error::E> {
     match t {
+#[cfg(test)]
         Task::Nop => {}
         Task::Quit => return Ok(true),
         Task::ReadDir {
@@ -142,20 +172,17 @@ fn run_1task(
                 &mut postprocs,
             );
 
-            let postproc = move || {
-                postproc(postprocs);
-                dep_succ.notify_complete();
-            };
+            postprocs.push(TaskPostProc::DepChain(dep_succ));
 
             match dep_pred {
                 Ok(Some(p)) => {
-                    p.add_complete_callback(postproc);
+                    p.add_complete_postproc(postprocs);
                 }
                 Ok(None) => {
-                    postproc();
+                    postproc(postprocs);
                 }
                 Err(e) => {
-                    postproc();
+                    postproc(postprocs);
                     return Err(e);
                 }
             }
@@ -180,7 +207,6 @@ impl TraverseThread {
 
                 match t {
                     Task::Quit => {
-                        dbg!("quit");
                         break;
                     }
                     _ => {
@@ -213,21 +239,13 @@ impl ThreadList {
         let mut v = Vec::new();
         let free_thread_queue = crossbeam::channel::unbounded();
 
-        for i in 0..opts.num_threads {
+        for _ in 0..opts.num_threads {
             v.push(TraverseThread::new(opts.clone(), free_thread_queue.clone()));
         }
 
         ThreadList {
             free_thread_queue,
             threads: v,
-        }
-    }
-
-    fn try_pop_free_thread(&self) -> Option<Sender<Task>> {
-        let v = self.free_thread_queue.1.try_recv();
-        match v {
-            Ok(v) => Some(v),
-            Err(_) => None,
         }
     }
 
@@ -240,16 +258,16 @@ impl ThreadList {
 impl Drop for ThreadList {
     fn drop(&mut self) {
         let n = self.threads.len();
-        for i in 0..n {
+        for _ in 0..n {
             let t = self.pop_free_thread().unwrap();
-            t.send(Task::Quit);
+            t.send(Task::Quit).unwrap();
         }
 
-        for i in 0..n {
+        for _ in 0..n {
             let t = self.threads.pop().unwrap();
             let r = t.thread.join().unwrap();
             if r.is_err() {
-                dbg!(r);
+                println!("{:?}", r);
             }
         }
     }
@@ -268,6 +286,7 @@ pub enum Task {
         dep_pred: Option<events::DepChain>,
         dep_succ: events::DepChain,
     },
+#[cfg(test)]
     Nop,
 
     Quit,
@@ -287,7 +306,7 @@ pub fn traverse(t: &mut Traverser) -> Result<(), error::E> {
 
     let ft = tl.pop_free_thread()?;
 
-    ft.send(read_root);
+    ft.send(read_root).unwrap();
 
     final_dep.wait();
 

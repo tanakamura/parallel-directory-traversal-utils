@@ -8,13 +8,14 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug)]
 pub struct DirV {
     parent: Option<Dir>, // None when start directory
     abs_path: PathBuf,
     dirfd: nix::dir::Dir,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct Dir {
     v: Arc<Mutex<DirV>>,
 }
@@ -61,7 +62,7 @@ impl Dir {
 
     pub fn read_dir_all(&self) -> Result<Vec<nix::dir::Entry>, error::E> {
         let mut v = self.v.lock().unwrap();
-        let mut v = v.deref_mut();
+        let v = v.deref_mut();
         let mut ret = Vec::new();
         let mut pos = 0;
         for e in v.dirfd.iter() {
@@ -83,7 +84,7 @@ impl Dir {
     }
 
     pub fn entry_abspath(&self, e: &nix::dir::Entry) -> PathBuf {
-        let mut v = self.v.lock().unwrap();
+        let v = self.v.lock().unwrap();
         let mut r = v.abs_path.clone();
         let name = e.file_name();
         let osstr_name = OsStr::from_bytes(name.to_bytes());

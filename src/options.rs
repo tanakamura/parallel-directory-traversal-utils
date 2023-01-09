@@ -60,7 +60,7 @@ pub struct Options {
     #[command(subcommand)]
     pub method: Method,
 }
-
+#[cfg(test)]
 pub fn test_option(path: &str) -> Options {
     Options {
         src_path: PathBuf::from_str(path).unwrap(),
