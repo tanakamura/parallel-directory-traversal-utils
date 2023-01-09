@@ -27,38 +27,6 @@ struct TraverseContext {
     pos: usize,
 }
 
-fn run_postproc_task_0(t: TaskPostProc) -> Result<(),error::E> {
-    match t {
-            TaskPostProc::Show(s) => {
-                let mut v = s.into_vec();
-                v.push(b'\n');
-                error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
-            },
-            TaskPostProc::DepChain(d) => {
-                let mut d = d.v.lock().unwrap();
-
-                let mut v2 = Vec::new();
-                std::mem::swap(&mut v2, &mut d.complete_callbacks);
-
-                for t in v2 {
-                    run_postproc_task(t);
-                }
-
-                d.complete = true;
-                if let Some(b) = &d.waiter {
-                    // all finished
-                    b.wait();
-                }
-            },
-            TaskPostProc::Dummy => {
-                
-            }
-    }
-
-    Ok(())
-}
-
-
 fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
     let mut stk = Vec::new();   // maintain traverse context, recursive implementation causes stack overflow
 
@@ -155,21 +123,15 @@ fn traverse_dir(
 
             for e in entries {
                 let t = e.file_type().unwrap();
-                match t {
-                    nix::dir::Type::File => {
-                        if opts.method == crate::options::Method::List {
-                            let abspath = d.entry_abspath(&e);
-                            let path_str = abspath.into_os_string();
-                            push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
-                        }
-                    }
-                    nix::dir::Type::Directory => {
-                        if opts.method == crate::options::Method::List {
-                            let abspath = d.entry_abspath(&e);
-                            let path_str = abspath.clone().into_os_string();
-                            push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
-                        }
 
+                if opts.method == crate::options::Method::List {
+                    let abspath = d.entry_abspath(&e);
+                    let path_str = abspath.into_os_string();
+                    push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
+                }
+
+                match t {
+                    nix::dir::Type::Directory => {
                         let nt = free_thread_queue_rx.try_recv();
 
                         match nt {
