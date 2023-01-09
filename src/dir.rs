@@ -15,7 +15,7 @@ pub struct DirV {
     dirfd: nix::dir::Dir,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct Dir {
     v: Arc<Mutex<DirV>>,
 }

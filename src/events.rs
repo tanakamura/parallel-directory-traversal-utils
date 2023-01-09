@@ -13,7 +13,7 @@ impl DepChainV {
     }
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct DepChain {
     pub v: Arc<Mutex<DepChainV>>,
 }
@@ -44,25 +44,24 @@ impl DepChain {
         }
     }
 
-//    pub fn notify_complete(&self)->Result<(),crate::error::E> {
-//        let mut v = self.v.lock().unwrap();
-//        let mut v = v.deref_mut();
-//        v.complete = true;
-//        if let Some(b) = &v.waiter {
-//            // all finished
-//            b.wait();
-//        }
-//
-//        let mut v2 = Vec::new();
-//        std::mem::swap(&mut v2, &mut v.complete_callbacks);
-//
-//        crate::traverse::postproc(v2)?;
-//
-//        Ok(())
-//    }
+    //    pub fn notify_complete(&self)->Result<(),crate::error::E> {
+    //        let mut v = self.v.lock().unwrap();
+    //        let mut v = v.deref_mut();
+    //        v.complete = true;
+    //        if let Some(b) = &v.waiter {
+    //            // all finished
+    //            b.wait();
+    //        }
+    //
+    //        let mut v2 = Vec::new();
+    //        std::mem::swap(&mut v2, &mut v.complete_callbacks);
+    //
+    //        crate::traverse::postproc(v2)?;
+    //
+    //        Ok(())
+    //    }
 
-    pub fn add_complete_postproc(&self, t: Vec<crate::traverse::TaskPostProc>)
-    {
+    pub fn add_complete_postproc(&self, t: Vec<crate::traverse::TaskPostProc>) {
         let mut v = self.v.lock().unwrap();
         if v.complete {
             crate::traverse::postproc(t);

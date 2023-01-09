@@ -5,11 +5,11 @@ use crate::events::DepChain;
 use crate::options::{Options, Order};
 use crossbeam::channel::{Receiver, Sender};
 use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
 use std::io::Write;
+use std::ops::DerefMut;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::ops::DerefMut;
 
 pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
@@ -19,7 +19,7 @@ pub struct TraverseThread {
 pub enum TaskPostProc {
     Show(OsString),
     DepChain(DepChain),
-    Dummy
+    Dummy,
 }
 
 struct TraverseContext {
@@ -27,8 +27,8 @@ struct TraverseContext {
     pos: usize,
 }
 
-fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
-    let mut stk = Vec::new();   // maintain traverse context, recursive implementation causes stack overflow
+fn run_postproc_task(mut t: TaskPostProc) -> Result<(), error::E> {
+    let mut stk = Vec::new(); // maintain traverse context, recursive implementation causes stack overflow
 
     loop {
         match t {
@@ -36,10 +36,10 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
                 let mut v = s.into_vec();
                 v.push(b'\n');
                 error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
-            },
+            }
             TaskPostProc::DepChain(d) => {
-                stk.push(TraverseContext{d, pos: 0});
-            },
+                stk.push(TraverseContext { d, pos: 0 });
+            }
             TaskPostProc::Dummy => {
                 break;
             }
@@ -49,7 +49,7 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
         while stk.len() != 0 {
             let len = stk.len();
 
-            let mut top = &mut stk[len-1];
+            let mut top = &mut stk[len - 1];
             let mut top_d = top.d.v.lock().unwrap();
             let mut cbs = &mut top_d.complete_callbacks;
             let cbs_len = cbs.len();
@@ -82,7 +82,11 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
     Ok(())
 }
 
-fn push_postproc(dep_pred: &Option<DepChain>, postprocs: &mut Vec<TaskPostProc>, t: TaskPostProc) -> Result<(),error::E> {
+fn push_postproc(
+    dep_pred: &Option<DepChain>,
+    postprocs: &mut Vec<TaskPostProc>,
+    t: TaskPostProc,
+) -> Result<(), error::E> {
     if dep_pred.is_some() {
         postprocs.push(t);
     } else {
@@ -139,7 +143,7 @@ fn traverse_dir(
                                 let mut postprocs2 = Vec::new();
                                 std::mem::swap(&mut postprocs2, &mut postprocs);
 
-                                if let Some(d) = & dep_pred {
+                                if let Some(d) = &dep_pred {
                                     d.add_complete_postproc(postprocs2);
                                 } else {
                                     postproc(postprocs2)?;
@@ -157,9 +161,10 @@ fn traverse_dir(
                                 t.send(read_child).unwrap();
 
                                 dep_pred = Some(next_dep);
-                            },
+                            }
 
-                            Err(_) => { // traverse in own thread
+                            Err(_) => {
+                                // traverse in own thread
                                 dep_pred = traverse_dir(
                                     opts,
                                     &free_thread_queue_rx,
@@ -168,7 +173,7 @@ fn traverse_dir(
                                     dep_pred,
                                     &mut postprocs,
                                 )?;
-                            },
+                            }
                         }
                     }
                     _ => {}
@@ -180,7 +185,7 @@ fn traverse_dir(
     Ok(dep_pred)
 }
 
-pub fn postproc(p: Vec<TaskPostProc>) -> Result<(),error::E> {
+pub fn postproc(p: Vec<TaskPostProc>) -> Result<(), error::E> {
     for v in p {
         run_postproc_task(v)?;
     }
@@ -193,7 +198,7 @@ fn run_1task(
     free_thread_queue_rx: &Receiver<Sender<Task>>,
 ) -> Result<bool, error::E> {
     match t {
-#[cfg(test)]
+        #[cfg(test)]
         Task::Nop => {}
         Task::Quit => return Ok(true),
         Task::ReadDir {
@@ -327,7 +332,7 @@ pub enum Task {
         dep_pred: Option<events::DepChain>,
         dep_succ: events::DepChain,
     },
-#[cfg(test)]
+    #[cfg(test)]
     Nop,
 
     Quit,

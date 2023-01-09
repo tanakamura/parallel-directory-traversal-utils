@@ -28,20 +28,14 @@ pub enum E {
 impl E {
     pub fn is_ignorable_error(&self, opts: &Options) -> bool {
         match self {
-            E::OpenDirError{path:_, eno} => {
-                match eno {
-                    nix::errno::Errno::EACCES => {
-                        dbg!("ignore error", &self);
-                        opts.ignore_eaccess
-                    },
-                    _ => {
-                        false
-                    }
+            E::OpenDirError { path: _, eno } => match eno {
+                nix::errno::Errno::EACCES => {
+                    dbg!("ignore error", &self);
+                    opts.ignore_eaccess
                 }
-            }
-            _ => {
-                false
-            }
+                _ => false,
+            },
+            _ => false,
         }
     }
 }
@@ -83,13 +77,9 @@ pub fn maybe_readdir_error<V>(
     }
 }
 
-pub fn maybe_generic_io_error<V>(
-    r: Result<V, std::io::Error>,
-) -> Result<V, E> {
+pub fn maybe_generic_io_error<V>(r: Result<V, std::io::Error>) -> Result<V, E> {
     match r {
         Ok(v) => Ok(v),
-        Err(e) => Err(E::GenericIOError {
-            eno: e,
-        }),
+        Err(e) => Err(E::GenericIOError { eno: e }),
     }
 }
