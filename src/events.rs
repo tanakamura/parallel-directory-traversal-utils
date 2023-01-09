@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::ops::DerefMut;
 
 pub struct DepChainV {
     complete: bool,
     waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
-    complete_callbacks: Vec<Vec<crate::traverse::TaskPostProc>>,
+    complete_callbacks: Vec<crate::traverse::TaskPostProc>,
 }
 
 impl DepChainV {
@@ -45,6 +46,7 @@ impl DepChain {
 
     pub fn notify_complete(&self)->Result<(),crate::error::E> {
         let mut v = self.v.lock().unwrap();
+        let mut v = v.deref_mut();
         v.complete = true;
         if let Some(b) = &v.waiter {
             // all finished
@@ -53,9 +55,8 @@ impl DepChain {
 
         let mut v2 = Vec::new();
         std::mem::swap(&mut v2, &mut v.complete_callbacks);
-        for t in v2.into_iter() {
-            crate::traverse::postproc(t)?;
-        }
+
+        crate::traverse::postproc(v2)?;
 
         Ok(())
     }
@@ -66,7 +67,9 @@ impl DepChain {
         if v.complete {
             crate::traverse::postproc(t);
         } else {
-            v.complete_callbacks.push(t);
+            for t in t.into_iter() {
+                v.complete_callbacks.push(t);
+            }
         }
     }
 }

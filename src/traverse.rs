@@ -19,6 +19,10 @@ pub enum TaskPostProc {
     DepChain(DepChain),
 }
 
+struct TraverseContext {
+    
+}
+
 fn run_postproc_task(t: TaskPostProc) -> Result<(),error::E> {
     match t {
         TaskPostProc::Show(s) => {
