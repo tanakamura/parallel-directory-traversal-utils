@@ -1,7 +1,10 @@
 use clap::Parser;
 
+mod dir;
 mod error;
+mod events;
 mod options;
+mod pathstr;
 mod traverse;
 
 fn main() -> Result<(), error::E> {

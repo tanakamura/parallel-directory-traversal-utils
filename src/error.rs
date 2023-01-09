@@ -1,24 +1,81 @@
-use crossbeam::channel::Sender;
+use crate::options::Options;
 use crate::traverse::Task;
+use crossbeam::channel::Sender;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum E {
-    SendFreeThreadError { e: crossbeam_channel::SendError<Sender<Task>> },
-    RecvFreeThreadError { e: crossbeam_channel::RecvError }
+    SendFreeThreadError {
+        e: crossbeam_channel::SendError<Sender<Task>>,
+    },
+    RecvFreeThreadError {
+        e: crossbeam_channel::RecvError,
+    },
+    OpenDirError {
+        path: PathBuf,
+        eno: nix::errno::Errno,
+    },
+    ReadDirError {
+        dirpath: PathBuf,
+        entry_pos: usize,
+        eno: nix::errno::Errno,
+    },
 }
 
-impl From<crossbeam_channel::SendError<Sender<Task>>> for E {
-    fn from ( e :crossbeam_channel::SendError<Sender<Task>>) -> E {
-        E::SendFreeThreadError {
-            e
+impl E {
+    pub fn is_ignorable_error(&self, opts: &Options) -> bool {
+        match self {
+            E::OpenDirError{path, eno} => {
+                match eno {
+                    nix::errno::Errno::EACCES => {
+                        dbg!("ignore error", &self);
+                        opts.ignore_eaccess
+                    },
+                    _ => {
+                        false
+                    }
+                }
+            }
+            _ => {
+                false
+            }
         }
     }
 }
 
+impl From<crossbeam_channel::SendError<Sender<Task>>> for E {
+    fn from(e: crossbeam_channel::SendError<Sender<Task>>) -> E {
+        E::SendFreeThreadError { e }
+    }
+}
+
 impl From<crossbeam_channel::RecvError> for E {
-    fn from ( e :crossbeam_channel::RecvError) -> E {
-        E::RecvFreeThreadError {
-            e
-        }
+    fn from(e: crossbeam_channel::RecvError) -> E {
+        E::RecvFreeThreadError { e }
+    }
+}
+
+pub fn maybe_open_dir_error<V>(abs_path: &Path, r: Result<V, nix::errno::Errno>) -> Result<V, E> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => Err(E::OpenDirError {
+            path: abs_path.to_owned(),
+            eno: e,
+        }),
+    }
+}
+
+pub fn maybe_readdir_error<V>(
+    abs_path: &Path,
+    pos: usize,
+    r: Result<V, nix::errno::Errno>,
+) -> Result<V, E> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => Err(E::ReadDirError {
+            dirpath: abs_path.to_owned(),
+            entry_pos: pos,
+            eno: e,
+        }),
     }
 }
