@@ -19,7 +19,7 @@ pub enum TaskPostProc {
     DepChain(DepChain),
 }
 
-pub fn run_postproc_task(t: TaskPostProc) -> Result<(),error::E> {
+fn run_postproc_task(t: TaskPostProc) -> Result<(),error::E> {
     match t {
         TaskPostProc::Show(s) => {
             let mut v = s.into_vec();
@@ -72,7 +72,6 @@ fn traverse_dir(
             if opts.order == Order::Alphabetical {
                 entries.sort_by(|l, r| l.file_name().cmp(r.file_name()));
             }
-
 
             for e in entries {
                 let t = e.file_type().unwrap();
