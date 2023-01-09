@@ -1,10 +1,9 @@
 use std::sync::{Arc, Mutex};
-use std::ops::DerefMut;
 
 pub struct DepChainV {
-    complete: bool,
-    waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
-    complete_callbacks: Vec<crate::traverse::TaskPostProc>,
+    pub complete: bool,
+    pub waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
+    pub complete_callbacks: Vec<crate::traverse::TaskPostProc>,
 }
 
 impl DepChainV {
@@ -44,22 +43,22 @@ impl DepChain {
         }
     }
 
-    pub fn notify_complete(&self)->Result<(),crate::error::E> {
-        let mut v = self.v.lock().unwrap();
-        let mut v = v.deref_mut();
-        v.complete = true;
-        if let Some(b) = &v.waiter {
-            // all finished
-            b.wait();
-        }
-
-        let mut v2 = Vec::new();
-        std::mem::swap(&mut v2, &mut v.complete_callbacks);
-
-        crate::traverse::postproc(v2)?;
-
-        Ok(())
-    }
+//    pub fn notify_complete(&self)->Result<(),crate::error::E> {
+//        let mut v = self.v.lock().unwrap();
+//        let mut v = v.deref_mut();
+//        v.complete = true;
+//        if let Some(b) = &v.waiter {
+//            // all finished
+//            b.wait();
+//        }
+//
+//        let mut v2 = Vec::new();
+//        std::mem::swap(&mut v2, &mut v.complete_callbacks);
+//
+//        crate::traverse::postproc(v2)?;
+//
+//        Ok(())
+//    }
 
     pub fn add_complete_postproc(&self, t: Vec<crate::traverse::TaskPostProc>)
     {

@@ -1,7 +1,6 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::str::FromStr;
 
 #[derive(Clone, Serialize, Deserialize, Debug, clap::Subcommand, Eq, PartialEq)]
 pub enum Method {
