@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug)]
 pub struct DepChainV {
     pub complete: bool,
     pub waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
@@ -12,7 +13,7 @@ impl DepChainV {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct DepChain {
     pub v: Arc<Mutex<DepChainV>>,
 }

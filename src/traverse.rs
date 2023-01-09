@@ -15,6 +15,7 @@ pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
 }
 
+#[derive(Debug)]
 pub enum TaskPostProc {
     Show(OsString),
     DepChain(DepChain),
@@ -23,8 +24,40 @@ pub enum TaskPostProc {
 
 struct TraverseContext {
     d: DepChain,
-    cnt: usize,
+    pos: usize,
 }
+
+fn run_postproc_task_0(t: TaskPostProc) -> Result<(),error::E> {
+    match t {
+            TaskPostProc::Show(s) => {
+                let mut v = s.into_vec();
+                v.push(b'\n');
+                error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
+            },
+            TaskPostProc::DepChain(d) => {
+                let mut d = d.v.lock().unwrap();
+
+                let mut v2 = Vec::new();
+                std::mem::swap(&mut v2, &mut d.complete_callbacks);
+
+                for t in v2 {
+                    run_postproc_task(t);
+                }
+
+                d.complete = true;
+                if let Some(b) = &d.waiter {
+                    // all finished
+                    b.wait();
+                }
+            },
+            TaskPostProc::Dummy => {
+                
+            }
+    }
+
+    Ok(())
+}
+
 
 fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
     let mut stk = Vec::new();   // maintain traverse context, recursive implementation causes stack overflow
@@ -37,7 +70,7 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
                 error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
             },
             TaskPostProc::DepChain(d) => {
-                stk.push(TraverseContext{d, cnt: 0});
+                stk.push(TraverseContext{d, pos: 0});
             },
             TaskPostProc::Dummy => {
                 break;
@@ -47,13 +80,14 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
         t = TaskPostProc::Dummy;
         while stk.len() != 0 {
             let len = stk.len();
+
             let mut top = &mut stk[len-1];
             let mut top_d = top.d.v.lock().unwrap();
-            let cbs = &top_d.complete_callbacks;
-            let l = cbs.len();
-            let cnt = top.cnt;
+            let mut cbs = &mut top_d.complete_callbacks;
+            let cbs_len = cbs.len();
+            let cbs_pos = top.pos;
 
-            if l == cnt {
+            if cbs_pos == cbs_len {
                 /* finish */
                 top_d.complete = true;
                 if let Some(b) = &top_d.waiter {
@@ -67,11 +101,12 @@ fn run_postproc_task(mut t: TaskPostProc) -> Result<(),error::E> {
                 continue;
             } else {
                 let mut tnext = TaskPostProc::Dummy;
-                std::mem::swap(&mut top_d.complete_callbacks[cnt], &mut tnext);
+                std::mem::swap(&mut cbs[cbs_pos], &mut tnext);
 
-                top.cnt = cnt + 1;
+                top.pos = cbs_pos + 1;
 
                 t = tnext;
+                break;
             }
         }
     }
