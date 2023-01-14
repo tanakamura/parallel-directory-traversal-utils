@@ -66,7 +66,7 @@ impl DepChain {
         if v.complete {
             crate::traverse::postproc(t);
         } else {
-            for t in t.into_iter() {
+            for t in t {
                 v.complete_callbacks.push(t);
             }
         }
