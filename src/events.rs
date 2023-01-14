@@ -4,7 +4,28 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug)]
 pub struct DepChainV {
     pub completed: bool,
-    pub waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
+    pub waiter: Option<(
+        crossbeam_channel::Sender<()>,
+        crossbeam_channel::Receiver<()>,
+    )>, // to notify all complete
+}
+
+impl DepChainV {
+    pub fn get_channel_locked(
+        &mut self,
+    ) -> (
+        crossbeam_channel::Sender<()>,
+        crossbeam_channel::Receiver<()>,
+    ) {
+        if let Some(w) = &self.waiter {
+            return w.clone();
+        }
+
+        let ret = crossbeam_channel::bounded(0);
+        self.waiter = Some(ret.clone());
+
+        return ret;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -14,6 +35,15 @@ pub struct DepChain {
 }
 
 impl DepChain {
+    pub fn get_wait_channel(&mut self) -> Option<crossbeam_channel::Receiver<()>> {
+        let mut v = self.v.lock().unwrap();
+        if v.completed {
+            return None;
+        }
+
+        Some(v.get_channel_locked().1)
+    }
+
     pub fn wait(&self) {
         let mut v = self.v.lock().unwrap();
 
@@ -21,11 +51,10 @@ impl DepChain {
             return;
         }
 
-        let b = Arc::new(std::sync::Barrier::new(2));
-        v.waiter = Some(b.clone());
+        let rx = v.get_channel_locked().1;
         drop(v);
 
-        b.wait();
+        rx.recv().unwrap();
     }
 
     pub fn is_completed(&self) -> bool {
@@ -53,7 +82,7 @@ impl DepChain {
         std::mem::swap(&mut b, &mut v.waiter);
 
         if let Some(w) = b {
-            w.wait();
+            w.0.send(()).unwrap();
         }
     }
 }

@@ -2,7 +2,7 @@ use crate::dir::Dir;
 use crate::error;
 use crate::events;
 use crate::options::{Options, Order};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{select, Receiver, Sender};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
@@ -29,67 +29,6 @@ fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
 
     Ok(())
 }
-
-//struct TraverseContext {
-//    d: DepChain,
-//    pos: usize,
-//}
-//
-//
-//    let mut stk = Vec::new(); // maintain traverse context, recursive implementation causes stack overflow
-//
-//    loop {
-//        match t {
-//            TaskPostProc::Show(s) => {
-//                let mut v = s.into_vec();
-//                v.push(b'\n');
-//                error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
-//            }
-//            TaskPostProc::DepChain(d) => {
-//                stk.push(TraverseContext { d, pos: 0 });
-//            }
-//            TaskPostProc::Dummy => {
-//                break;
-//            }
-//        }
-//
-//        t = TaskPostProc::Dummy;
-//        while stk.len() != 0 {
-//            let len = stk.len();
-//
-//            let mut top = &mut stk[len - 1];
-//            let mut top_d = top.d.v.lock().unwrap();
-//            let mut cbs = &mut top_d.complete_callbacks;
-//            let cbs_len = cbs.len();
-
-//            let cbs_pos = top.pos;
-//
-//            if cbs_pos == cbs_len {
-//                /* finish */
-//                top_d.complete = true;
-//                if let Some(b) = &top_d.waiter {
-//                    // all finished
-//                    b.wait();
-//                }
-//                drop(top_d);
-//                drop(top);
-//
-//                stk.pop();
-//                continue;
-//            } else {
-//                let mut tnext = TaskPostProc::Dummy;
-//                std::mem::swap(&mut cbs[cbs_pos], &mut tnext);
-//
-//                top.pos = cbs_pos + 1;
-//
-//                t = tnext;
-//                break;
-//            }
-//        }
-//    }
-//
-//    Ok(())
-//}
 
 struct DepPostProcs {
     pred: events::DepChain,
@@ -154,18 +93,6 @@ impl<'a> TraverseState<'a> {
 
     fn gen_chain(&mut self) -> (crate::events::DepChain, crate::events::DepChain) {
         // (pred,succ)
-
-        //        let mut new_task_pred = crate::events::DepChain::new();
-        //        let mut new_task_succ = crate::events::DepChain::new();
-        //
-        //        let push_val = DepPostProcs {
-        //            pred: self.cur_pred,
-        //            succ: new_task_pred.clone(),
-        //            postprocs: self.cur_postprocs,
-        //        };
-        //
-        //        self.cur_pred = new_task_succ.clone();
-        //        self.cur_postprocs = Vec::new();
 
         let new_task_pred = crate::events::DepChain::new();
         let mut new_task_succ = crate::events::DepChain::new();
@@ -288,7 +215,9 @@ fn run_1task(
             st.cur_pred = dep_pred;
             assert!(st.cur_postprocs.len() == 0);
 
+            println!("traverse start {:?}", path);
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
+            println!("traverse finish {:?}", path);
 
             if let Ok(_) = err {
                 let mut pred = events::DepChain::new();
@@ -320,6 +249,7 @@ impl TraverseThread {
     fn new(
         opts: Options,
         free_thread_queue: (Sender<Sender<Task>>, Receiver<Sender<Task>>),
+        tid: usize,
     ) -> TraverseThread {
         let th = thread::spawn(move || -> Result<(), error::E> {
             let mut st = TraverseState {
@@ -329,20 +259,46 @@ impl TraverseThread {
                 cur_postprocs: Vec::new(),
             };
 
-            let tq = crossbeam::channel::unbounded();
+            let tq = crossbeam::channel::bounded(0);
             let mut ret: Result<(), error::E> = Ok(());
 
             loop {
                 free_thread_queue.0.send(tq.0.clone())?;
-                let t = tq.1.recv()?;
 
-                match t {
+                let tv;
+
+                loop {
+                    st.pump()?;
+
+                    if let Some(top) = st.pend_fifo.get_mut(0) {
+                        let chan = top.pred.get_wait_channel();
+                        if let Some(chan) = chan {
+                            let v = chan.recv()?;
+                            println!("prev complete {}", tid);
+                            continue;
+                        //                            select! {
+                        //                                recv(chan) -> v => {v?; println!("prev compl");continue},
+                        //                                recv(tq.1) -> v => {tv = v?; println!("recv1"); break;}
+                        //                            }
+                        } else {
+                            println!("recv2 {}", tid);
+                            continue;
+                        }
+                    } else {
+                        println!("recv1 {}", tid);
+                        tv = tq.1.recv()?;
+                        println!("recv1xx {}", tid);
+                        break;
+                    }
+                }
+
+                match tv {
                     Task::Quit => {
                         break;
                     }
                     _ => {
                         if ret.is_ok() {
-                            let r = run_1task(t, &mut st, &free_thread_queue.1);
+                            let r = run_1task(tv, &mut st, &free_thread_queue.1);
                             match r {
                                 Ok(true) => break,
                                 Ok(false) => continue,
@@ -370,8 +326,12 @@ impl ThreadList {
         let mut v = Vec::new();
         let free_thread_queue = crossbeam::channel::unbounded();
 
-        for _ in 0..opts.num_threads {
-            v.push(TraverseThread::new(opts.clone(), free_thread_queue.clone()));
+        for id in 0..opts.num_threads {
+            v.push(TraverseThread::new(
+                opts.clone(),
+                free_thread_queue.clone(),
+                id,
+            ));
         }
 
         ThreadList {

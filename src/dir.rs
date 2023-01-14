@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct DirV {
-    parent: Option<Dir>, // None when start directory
+    //parent: Option<Dir>, // None when start directory
     abs_path: PathBuf,
     dirfd: nix::dir::Dir,
 }
@@ -40,7 +40,6 @@ impl Dir {
             v: Arc::new(Mutex::new(DirV {
                 dirfd: fd,
                 abs_path,
-                parent: Some(parent.clone()),
             })),
         })
     }
@@ -55,7 +54,6 @@ impl Dir {
             v: Arc::new(Mutex::new(DirV {
                 dirfd: fd,
                 abs_path: path.to_owned(),
-                parent: None,
             })),
         })
     }
