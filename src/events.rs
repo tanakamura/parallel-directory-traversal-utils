@@ -1,27 +1,23 @@
+use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct DepChainV {
-    pub complete: bool,
+    pub completed: bool,
     pub waiter: Option<Arc<std::sync::Barrier>>, // to notify all complete
-    pub complete_callbacks: Vec<crate::traverse::TaskPostProc>,
-}
-
-impl DepChainV {
-    fn completed(&self) -> bool {
-        self.complete
-    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DepChain {
     pub v: Arc<Mutex<DepChainV>>,
+    pub pred: Option<Box<DepChain>>, // None for first chain
 }
 
 impl DepChain {
     pub fn wait(&self) {
         let mut v = self.v.lock().unwrap();
-        if v.completed() {
+
+        if v.completed {
             return;
         }
 
@@ -32,43 +28,32 @@ impl DepChain {
         b.wait();
     }
 
+    pub fn is_completed(&self) -> bool {
+        self.v.lock().unwrap().completed
+    }
+
     pub fn new() -> DepChain {
         let v = DepChainV {
-            complete: false,
+            completed: false,
             waiter: None,
-            complete_callbacks: Vec::new(),
         };
 
         DepChain {
             v: Arc::new(Mutex::new(v)),
+            pred: None,
         }
     }
 
-    //    pub fn notify_complete(&self)->Result<(),crate::error::E> {
-    //        let mut v = self.v.lock().unwrap();
-    //        let mut v = v.deref_mut();
-    //        v.complete = true;
-    //        if let Some(b) = &v.waiter {
-    //            // all finished
-    //            b.wait();
-    //        }
-    //
-    //        let mut v2 = Vec::new();
-    //        std::mem::swap(&mut v2, &mut v.complete_callbacks);
-    //
-    //        crate::traverse::postproc(v2)?;
-    //
-    //        Ok(())
-    //    }
-
-    pub fn add_complete_postproc(&self, t: Vec<crate::traverse::TaskPostProc>) {
+    pub fn complete(&mut self) {
         let mut v = self.v.lock().unwrap();
-        if v.complete {
-            crate::traverse::postproc(t);
-        } else {
-            for t in t {
-                v.complete_callbacks.push(t);
-            }
+        let mut v = v.deref_mut();
+        v.completed = true;
+
+        let mut b = None;
+        std::mem::swap(&mut b, &mut v.waiter);
+
+        if let Some(w) = b {
+            w.wait();
         }
     }
 }

@@ -1,12 +1,10 @@
 use crate::dir::Dir;
 use crate::error;
 use crate::events;
-use crate::events::DepChain;
 use crate::options::{Options, Order};
 use crossbeam::channel::{Receiver, Sender};
 use std::ffi::OsString;
 use std::io::Write;
-use std::ops::DerefMut;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -18,85 +16,175 @@ pub struct TraverseThread {
 #[derive(Debug)]
 pub enum TaskPostProc {
     Show(OsString),
-    DepChain(DepChain),
-    Dummy,
 }
 
-struct TraverseContext {
-    d: DepChain,
-    pos: usize,
-}
-
-fn run_postproc_task(mut t: TaskPostProc) -> Result<(), error::E> {
-    let mut stk = Vec::new(); // maintain traverse context, recursive implementation causes stack overflow
-
-    loop {
-        match t {
-            TaskPostProc::Show(s) => {
-                let mut v = s.into_vec();
-                v.push(b'\n');
-                error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
-            }
-            TaskPostProc::DepChain(d) => {
-                stk.push(TraverseContext { d, pos: 0 });
-            }
-            TaskPostProc::Dummy => {
-                break;
-            }
-        }
-
-        t = TaskPostProc::Dummy;
-        while stk.len() != 0 {
-            let len = stk.len();
-
-            let mut top = &mut stk[len - 1];
-            let mut top_d = top.d.v.lock().unwrap();
-            let mut cbs = &mut top_d.complete_callbacks;
-            let cbs_len = cbs.len();
-            let cbs_pos = top.pos;
-
-            if cbs_pos == cbs_len {
-                /* finish */
-                top_d.complete = true;
-                if let Some(b) = &top_d.waiter {
-                    // all finished
-                    b.wait();
-                }
-                drop(top_d);
-                drop(top);
-
-                stk.pop();
-                continue;
-            } else {
-                let mut tnext = TaskPostProc::Dummy;
-                std::mem::swap(&mut cbs[cbs_pos], &mut tnext);
-
-                top.pos = cbs_pos + 1;
-
-                t = tnext;
-                break;
-            }
+fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
+    match t {
+        TaskPostProc::Show(s) => {
+            let mut v = s.into_vec();
+            v.push(b'\n');
+            error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
         }
     }
 
     Ok(())
 }
 
-fn push_postproc(
-    dep_pred: &Option<DepChain>,
-    postprocs: &mut Vec<TaskPostProc>,
-    t: TaskPostProc,
-) -> Result<(), error::E> {
-    if dep_pred.is_some() {
-        postprocs.push(t);
-    } else {
-        run_postproc_task(t)?;
-    }
-    Ok(())
+//struct TraverseContext {
+//    d: DepChain,
+//    pos: usize,
+//}
+//
+//
+//    let mut stk = Vec::new(); // maintain traverse context, recursive implementation causes stack overflow
+//
+//    loop {
+//        match t {
+//            TaskPostProc::Show(s) => {
+//                let mut v = s.into_vec();
+//                v.push(b'\n');
+//                error::maybe_generic_io_error(std::io::stdout().write_all(v.as_slice()))?;
+//            }
+//            TaskPostProc::DepChain(d) => {
+//                stk.push(TraverseContext { d, pos: 0 });
+//            }
+//            TaskPostProc::Dummy => {
+//                break;
+//            }
+//        }
+//
+//        t = TaskPostProc::Dummy;
+//        while stk.len() != 0 {
+//            let len = stk.len();
+//
+//            let mut top = &mut stk[len - 1];
+//            let mut top_d = top.d.v.lock().unwrap();
+//            let mut cbs = &mut top_d.complete_callbacks;
+//            let cbs_len = cbs.len();
+
+//            let cbs_pos = top.pos;
+//
+//            if cbs_pos == cbs_len {
+//                /* finish */
+//                top_d.complete = true;
+//                if let Some(b) = &top_d.waiter {
+//                    // all finished
+//                    b.wait();
+//                }
+//                drop(top_d);
+//                drop(top);
+//
+//                stk.pop();
+//                continue;
+//            } else {
+//                let mut tnext = TaskPostProc::Dummy;
+//                std::mem::swap(&mut cbs[cbs_pos], &mut tnext);
+//
+//                top.pos = cbs_pos + 1;
+//
+//                t = tnext;
+//                break;
+//            }
+//        }
+//    }
+//
+//    Ok(())
+//}
+
+struct DepPostProcs {
+    pred: events::DepChain,
+    succ: events::DepChain,
+    postprocs: Vec<TaskPostProc>,
 }
 
 struct TraverseState<'a> {
     opts: &'a Options,
+    pend_fifo: std::collections::VecDeque<DepPostProcs>,
+    cur_postprocs: Vec<TaskPostProc>,
+    cur_pred: events::DepChain,
+}
+
+impl<'a> TraverseState<'a> {
+    fn flush_cur_postprocs(&mut self) -> Result<(), error::E> {
+        assert!(self.pend_fifo.len() == 0);
+
+        if self.cur_postprocs.len() != 0 {
+            let mut v = Vec::new();
+            std::mem::swap(&mut v, &mut self.cur_postprocs);
+
+            for t in v {
+                run_postproc_task(t)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn push_postproc(&mut self, t: TaskPostProc) -> Result<(), error::E> {
+        self.pump()?;
+        let cur_postprocs = &mut self.cur_postprocs;
+        let cur_pred = &self.cur_pred;
+        if cur_pred.is_completed() {
+            self.flush_cur_postprocs()?;
+            run_postproc_task(t)?;
+        } else {
+            cur_postprocs.push(t)
+        }
+        Ok(())
+    }
+
+    fn pump(&mut self) -> Result<bool, error::E> {
+        loop {
+            if let Some(v) = self.pend_fifo.get(0) {
+                if v.pred.is_completed() {
+                    let mut v = self.pend_fifo.pop_front().unwrap();
+                    for t in v.postprocs {
+                        run_postproc_task(t)?;
+                    }
+                    v.succ.complete()
+                } else {
+                    return Ok(false);
+                }
+            } else {
+                self.flush_cur_postprocs()?;
+                return Ok(true);
+            }
+        }
+    }
+
+    fn gen_chain(&mut self) -> (crate::events::DepChain, crate::events::DepChain) {
+        // (pred,succ)
+
+        //        let mut new_task_pred = crate::events::DepChain::new();
+        //        let mut new_task_succ = crate::events::DepChain::new();
+        //
+        //        let push_val = DepPostProcs {
+        //            pred: self.cur_pred,
+        //            succ: new_task_pred.clone(),
+        //            postprocs: self.cur_postprocs,
+        //        };
+        //
+        //        self.cur_pred = new_task_succ.clone();
+        //        self.cur_postprocs = Vec::new();
+
+        let new_task_pred = crate::events::DepChain::new();
+        let mut new_task_succ = crate::events::DepChain::new();
+        let mut next_vec = Vec::new();
+
+        std::mem::swap(&mut self.cur_pred, &mut new_task_succ);
+        std::mem::swap(&mut self.cur_postprocs, &mut next_vec);
+
+        let push_val = DepPostProcs {
+            pred: new_task_succ,
+            succ: new_task_pred.clone(),
+            postprocs: next_vec,
+        };
+
+        self.cur_postprocs = Vec::new();
+        self.pend_fifo.push_back(push_val);
+
+        (new_task_pred, self.cur_pred.clone())
+    }
 }
 
 fn traverse_dir(
@@ -104,9 +192,7 @@ fn traverse_dir(
     free_thread_queue_rx: &Receiver<Sender<Task>>,
     parent_dirfd: Option<&Dir>,
     path: &Path,
-    mut dep_pred: Option<DepChain>,
-    mut postprocs: &mut Vec<TaskPostProc>,
-) -> Result<Option<DepChain>, error::E> {
+) -> Result<(), crate::error::E> {
     let d = if let Some(pd) = parent_dirfd {
         Dir::new_at(&pd, &path)
     } else {
@@ -116,7 +202,7 @@ fn traverse_dir(
     match d {
         Err(e) => {
             if e.is_ignorable_error(&st.opts) {
-                return Ok(dep_pred);
+                return Ok(());
             } else {
                 return Err(e);
             }
@@ -135,7 +221,7 @@ fn traverse_dir(
                 if st.opts.method == crate::options::Method::List {
                     let abspath = d.entry_abspath(&e);
                     let path_str = abspath.into_os_string();
-                    push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
+                    st.push_postproc(TaskPostProc::Show(path_str))?;
                 }
 
                 match t {
@@ -144,38 +230,26 @@ fn traverse_dir(
 
                         match nt {
                             Ok(t) => {
-                                let mut postprocs2 = Vec::new();
-                                std::mem::swap(&mut postprocs2, &mut postprocs);
-
-                                if let Some(d) = &dep_pred {
-                                    d.add_complete_postproc(postprocs2);
-                                } else {
-                                    postproc(postprocs2)?;
-                                }
-
-                                let next_dep = events::DepChain::new();
+                                st.pump()?;
+                                let (new_pred, new_succ) = st.gen_chain();
 
                                 let read_child = Task::ReadDir {
                                     parent_dir: Some(d.clone()),
                                     path: crate::pathstr::entry_to_path(&e).to_owned(),
-                                    dep_pred,
-                                    dep_succ: next_dep.clone(),
+                                    dep_pred: new_pred,
+                                    dep_succ: new_succ,
                                 };
 
                                 t.send(read_child).unwrap();
-
-                                dep_pred = Some(next_dep);
                             }
 
                             Err(_) => {
                                 // traverse in own thread
-                                dep_pred = traverse_dir(
+                                traverse_dir(
                                     st,
                                     &free_thread_queue_rx,
                                     Some(&d),
                                     crate::pathstr::entry_to_path(&e),
-                                    dep_pred,
-                                    &mut postprocs,
                                 )?;
                             }
                         }
@@ -186,15 +260,15 @@ fn traverse_dir(
         }
     }
 
-    Ok(dep_pred)
-}
-
-pub fn postproc(p: Vec<TaskPostProc>) -> Result<(), error::E> {
-    for v in p {
-        run_postproc_task(v)?;
-    }
     Ok(())
 }
+
+//pub fn postproc(p: Vec<TaskPostProc>) -> Result<(), error::E> {
+//    for v in p {
+//        run_postproc_task(v)?;
+//    }
+//    Ok(())
+//}
 
 fn run_1task(
     t: Task,
@@ -211,30 +285,30 @@ fn run_1task(
             dep_pred,
             dep_succ,
         } => {
-            let mut postprocs = Vec::new();
+            st.cur_pred = dep_pred;
+            assert!(st.cur_postprocs.len() == 0);
 
-            let dep_pred = traverse_dir(
-                st,
-                &free_thread_queue_rx,
-                parent_dir.as_ref(),
-                &path,
-                dep_pred,
-                &mut postprocs,
-            );
+            let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
 
-            postprocs.push(TaskPostProc::DepChain(dep_succ));
+            if let Ok(_) = err {
+                let mut pred = events::DepChain::new();
+                std::mem::swap(&mut pred, &mut st.cur_pred);
+                let mut procs = Vec::new();
+                std::mem::swap(&mut procs, &mut st.cur_postprocs);
 
-            match dep_pred {
-                Ok(Some(p)) => {
-                    p.add_complete_postproc(postprocs);
-                }
-                Ok(None) => {
-                    postproc(postprocs);
-                }
-                Err(e) => {
-                    postproc(postprocs);
-                    return Err(e);
-                }
+                let push_val = DepPostProcs {
+                    pred: pred,
+                    succ: dep_succ,
+                    postprocs: procs,
+                };
+
+                st.pend_fifo.push_back(push_val);
+
+                err = st.pump().map(|_| ());
+            }
+
+            if let Err(e) = err {
+                return Err(e);
             }
         }
     };
@@ -248,7 +322,12 @@ impl TraverseThread {
         free_thread_queue: (Sender<Sender<Task>>, Receiver<Sender<Task>>),
     ) -> TraverseThread {
         let th = thread::spawn(move || -> Result<(), error::E> {
-            let mut st = TraverseState { opts: &opts };
+            let mut st = TraverseState {
+                opts: &opts,
+                pend_fifo: std::collections::VecDeque::new(),
+                cur_pred: events::DepChain::new(), // dummy
+                cur_postprocs: Vec::new(),
+            };
 
             let tq = crossbeam::channel::unbounded();
             let mut ret: Result<(), error::E> = Ok(());
@@ -329,13 +408,11 @@ pub struct Traverser {
     pub opt: Options,
 }
 
-type TaskStack = Vec<Task>;
-
 pub enum Task {
     ReadDir {
         parent_dir: Option<crate::dir::Dir>, // None if root
         path: PathBuf,
-        dep_pred: Option<events::DepChain>,
+        dep_pred: events::DepChain,
         dep_succ: events::DepChain,
     },
     #[cfg(test)]
@@ -348,11 +425,14 @@ pub fn traverse(t: &mut Traverser) -> Result<(), error::E> {
     let tl = ThreadList::new(t.opt.clone());
 
     let final_dep = events::DepChain::new();
+    let mut root_first = events::DepChain::new();
+
+    root_first.complete();
 
     let read_root = Task::ReadDir {
         parent_dir: None,
         path: t.opt.src_path.to_owned(),
-        dep_pred: None,
+        dep_pred: root_first,
         dep_succ: final_dep.clone(),
     };
 
