@@ -95,8 +95,12 @@ fn push_postproc(
     Ok(())
 }
 
+struct TraverseState<'a> {
+    opts: &'a Options,
+}
+
 fn traverse_dir(
-    opts: &Options,
+    st: &mut TraverseState,
     free_thread_queue_rx: &Receiver<Sender<Task>>,
     parent_dirfd: Option<&Dir>,
     path: &Path,
@@ -111,7 +115,7 @@ fn traverse_dir(
 
     match d {
         Err(e) => {
-            if e.is_ignorable_error(&opts) {
+            if e.is_ignorable_error(&st.opts) {
                 return Ok(dep_pred);
             } else {
                 return Err(e);
@@ -121,14 +125,14 @@ fn traverse_dir(
         Ok(d) => {
             let mut entries = d.read_dir_all()?;
 
-            if opts.order == Order::Alphabetical {
+            if st.opts.order == Order::Alphabetical {
                 entries.sort_by(|l, r| l.file_name().cmp(r.file_name()));
             }
 
             for e in entries {
                 let t = e.file_type().unwrap();
 
-                if opts.method == crate::options::Method::List {
+                if st.opts.method == crate::options::Method::List {
                     let abspath = d.entry_abspath(&e);
                     let path_str = abspath.into_os_string();
                     push_postproc(&dep_pred, &mut postprocs, TaskPostProc::Show(path_str))?;
@@ -166,7 +170,7 @@ fn traverse_dir(
                             Err(_) => {
                                 // traverse in own thread
                                 dep_pred = traverse_dir(
-                                    opts,
+                                    st,
                                     &free_thread_queue_rx,
                                     Some(&d),
                                     crate::pathstr::entry_to_path(&e),
@@ -194,7 +198,7 @@ pub fn postproc(p: Vec<TaskPostProc>) -> Result<(), error::E> {
 
 fn run_1task(
     t: Task,
-    opts: &Options,
+    st: &mut TraverseState,
     free_thread_queue_rx: &Receiver<Sender<Task>>,
 ) -> Result<bool, error::E> {
     match t {
@@ -210,7 +214,7 @@ fn run_1task(
             let mut postprocs = Vec::new();
 
             let dep_pred = traverse_dir(
-                &opts,
+                st,
                 &free_thread_queue_rx,
                 parent_dir.as_ref(),
                 &path,
@@ -244,6 +248,8 @@ impl TraverseThread {
         free_thread_queue: (Sender<Sender<Task>>, Receiver<Sender<Task>>),
     ) -> TraverseThread {
         let th = thread::spawn(move || -> Result<(), error::E> {
+            let mut st = TraverseState { opts: &opts };
+
             let tq = crossbeam::channel::unbounded();
             let mut ret: Result<(), error::E> = Ok(());
 
@@ -257,7 +263,7 @@ impl TraverseThread {
                     }
                     _ => {
                         if ret.is_ok() {
-                            let r = run_1task(t, &opts, &free_thread_queue.1);
+                            let r = run_1task(t, &mut st, &free_thread_queue.1);
                             match r {
                                 Ok(true) => break,
                                 Ok(false) => continue,
