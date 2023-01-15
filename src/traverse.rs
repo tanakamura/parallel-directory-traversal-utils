@@ -248,6 +248,7 @@ fn run_1task(
             st.current = cur_dep;
 
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
+            println!("traverse finish {:?}", path);
 
             if let Ok(_) = err {
                 let mut cur = st.current.borrow_mut();
