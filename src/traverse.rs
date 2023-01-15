@@ -96,6 +96,7 @@ impl<'a> TraverseState<'a> {
                 if v.pred.is_completed() {
                     if v.current {
                         v.flush_postprocs()?;
+                        return Ok(false);
                     } else {
                         drop(v);
                         let v = self.pend_fifo.pop_front().unwrap();
