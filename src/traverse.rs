@@ -42,18 +42,23 @@ struct DepPostProcs {
 struct TraverseState<'a> {
     opts: &'a Options,
     pend_fifo: std::collections::VecDeque<Rc<RefCell<DepPostProcs>>>,
-    cur_postprocs: Vec<TaskPostProc>,
-    cur_pred: events::DepChain,
+    current: Rc<RefCell<DepPostProcs>>
+    //cur_postprocs: Vec<TaskPostProc>,
+    //cur_pred: events::DepChain,
 }
 
 impl DepPostProcs {
     fn flush_postprocs(&mut self) -> Result<(),error::E> {
-        let mut tmp_vec = Vec::new();
-        std::mem::swap(&mut tmp_vec, &mut self.postprocs);
+        let tmp_vec = std::mem::take(&mut self.postprocs);
         for t in tmp_vec {
             run_postproc_task(t)?;
         }
         Ok(())
+    }
+
+    fn fixup(&mut self, succ: events::DepChain) {
+        self.succ = succ;
+        self.current = false;
     }
 }
 
@@ -61,13 +66,12 @@ impl<'a> TraverseState<'a> {
     fn flush_cur_postprocs(&mut self) -> Result<(), error::E> {
         assert!(self.pend_fifo.len() == 0);
 
-        if self.cur_postprocs.len() != 0 {
-            let mut v = Vec::new();
-            std::mem::swap(&mut v, &mut self.cur_postprocs);
+        let mut cur = self.current.borrow_mut();
 
-            for t in v {
-                run_postproc_task(t)?;
-            }
+        let mut v = Vec::new();
+        std::mem::swap(&mut v, &mut cur.postprocs);
+        for t in v {
+            run_postproc_task(t)?;
         }
 
         Ok(())
@@ -75,13 +79,12 @@ impl<'a> TraverseState<'a> {
 
     fn push_postproc(&mut self, t: TaskPostProc) -> Result<(), error::E> {
         self.pump()?;
-        let cur_postprocs = &mut self.cur_postprocs;
-        let cur_pred = &self.cur_pred;
-        if cur_pred.is_completed() {
-            self.flush_cur_postprocs()?;
+        let mut cur = self.current.borrow_mut();
+        if cur.pred.is_completed() {
+            cur.flush_postprocs()?;
             run_postproc_task(t)?;
         } else {
-            cur_postprocs.push(t)
+            cur.postprocs.push(t);
         }
         Ok(())
     }
@@ -115,23 +118,23 @@ impl<'a> TraverseState<'a> {
         // (pred,succ)
 
         let new_task_pred = crate::events::DepChain::new();
-        let mut new_task_succ = crate::events::DepChain::new();
-        let mut next_vec = Vec::new();
+        let new_task_succ = crate::events::DepChain::new();
 
-        std::mem::swap(&mut self.cur_pred, &mut new_task_succ);
-        std::mem::swap(&mut self.cur_postprocs, &mut next_vec);
+        let push_val = Rc::new(RefCell::new(DepPostProcs {
+            current: true,
+            pred: new_task_succ.clone(),
+            succ: events::DepChain::new_dummy(),
+            postprocs: Vec::new()
+        }));
 
-        let push_val = DepPostProcs {
-            current: false,
-            pred: new_task_succ,
-            succ: new_task_pred.clone(),
-            postprocs: next_vec,
-        };
+        let mut cur = self.current.borrow_mut();
+        cur.fixup(new_task_pred.clone());
+        drop(cur);
 
-        self.cur_postprocs = Vec::new();
-        self.pend_fifo.push_back(Rc::new(RefCell::new(push_val)));
+        self.current = push_val.clone();
+        self.pend_fifo.push_back(push_val);
 
-        (new_task_pred, self.cur_pred.clone())
+        (new_task_pred, new_task_succ)
     }
 }
 
@@ -233,28 +236,24 @@ fn run_1task(
             dep_pred,
             dep_succ,
         } => {
-            st.cur_pred = dep_pred;
-            assert!(st.cur_postprocs.len() == 0);
+            let cur_dep = Rc::new(RefCell::new(DepPostProcs {
+                current: true,
+                pred: dep_pred,
+                succ: crate::events::DepChain::new_dummy(),
+                postprocs: Vec::new()
+            }));
+
+            st.pend_fifo.push_back(cur_dep.clone());
+            st.current = cur_dep;
 
             println!("traverse start {:?}", path);
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
             println!("traverse finish {:?}", path);
 
             if let Ok(_) = err {
-                let mut pred = events::DepChain::new();
-                std::mem::swap(&mut pred, &mut st.cur_pred);
-                let mut procs = Vec::new();
-                std::mem::swap(&mut procs, &mut st.cur_postprocs);
-
-                let push_val = DepPostProcs {
-                    current: true,
-                    pred,
-                    succ: dep_succ,
-                    postprocs: procs,
-                };
-
-                st.pend_fifo.push_back(Rc::new(RefCell::new(push_val)));
-
+                let mut cur = st.current.borrow_mut();
+                cur.fixup(dep_succ);
+                drop(cur);
                 err = st.pump().map(|_| ());
             }
 
@@ -277,8 +276,12 @@ impl TraverseThread {
             let mut st = TraverseState {
                 opts: &opts,
                 pend_fifo: std::collections::VecDeque::new(),
-                cur_pred: events::DepChain::new_dummy(), // dummy
-                cur_postprocs: Vec::new(),
+                current : Rc::new(RefCell::new(DepPostProcs {
+                    current: true,
+                    pred: crate::events::DepChain::new_dummy(),
+                    succ: crate::events::DepChain::new_dummy(),
+                    postprocs: Vec::new()
+                }))             // dummy, unused value
             };
 
             let tq = crossbeam::channel::bounded(0);
