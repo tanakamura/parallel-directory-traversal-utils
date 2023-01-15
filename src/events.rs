@@ -1,4 +1,4 @@
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -73,7 +73,9 @@ impl DepChain {
     pub fn is_completed(&self) -> bool {
         match self {
             DepChain::Value { v, pred:_ } => {
-                v.lock().unwrap().completed
+                let v = v.lock().unwrap();
+                println!("is_complete {:?}", v.deref() as *const DepChainV);
+                v.completed
             },
             DepChain::Dummy => {
                 true
@@ -105,6 +107,8 @@ impl DepChain {
                 let mut v = v.deref_mut();
                 v.completed = true;
 
+                println!("notify {:?}", v as *const DepChainV);
+
                 let mut b = None;
                 std::mem::swap(&mut b, &mut v.waiter);
 
@@ -113,6 +117,16 @@ impl DepChain {
                 }
             }
         }
+    }
 
+    pub fn get_ptr(&self) -> *const DepChainV {
+        match self {
+            DepChain::Dummy => std::ptr::null(),
+            DepChain::Value {v, pred:_} => {
+                let mut v = v.lock().unwrap();
+                let mut v = v.deref_mut();
+                v as *const DepChainV
+            }
+        }
     }
 }

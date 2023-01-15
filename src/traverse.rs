@@ -42,9 +42,8 @@ struct DepPostProcs {
 struct TraverseState<'a> {
     opts: &'a Options,
     pend_fifo: std::collections::VecDeque<Rc<RefCell<DepPostProcs>>>,
-    current: Rc<RefCell<DepPostProcs>>
-    //cur_postprocs: Vec<TaskPostProc>,
-    //cur_pred: events::DepChain,
+    current: Rc<RefCell<DepPostProcs>>,
+    tid: usize
 }
 
 impl DepPostProcs {
@@ -93,6 +92,7 @@ impl<'a> TraverseState<'a> {
         loop {
             if let Some(v) = self.pend_fifo.get(0) {
                 let mut v = v.borrow_mut();
+                println!("{}: pump top={:?}", self.tid, v.pred.get_ptr());
                 if v.pred.is_completed() {
                     if v.current {
                         v.flush_postprocs()?;
@@ -150,6 +150,8 @@ fn traverse_dir(
     } else {
         Dir::new_root(&path)
     };
+
+    println!("{}: traverse dir {:?}", st.tid, path);
 
     match d {
         Err(e) => {
@@ -247,8 +249,9 @@ fn run_1task(
             st.pend_fifo.push_back(cur_dep.clone());
             st.current = cur_dep;
 
+            println!("{}:traverse start {:?}", st.tid, path);
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
-            println!("traverse finish {:?}", path);
+            println!("{}:traverse finish {:?}", st.tid, path);
 
             if let Ok(_) = err {
                 let mut cur = st.current.borrow_mut();
@@ -274,6 +277,7 @@ impl TraverseThread {
     ) -> TraverseThread {
         let th = thread::spawn(move || -> Result<(), error::E> {
             let mut st = TraverseState {
+                tid,
                 opts: &opts,
                 pend_fifo: std::collections::VecDeque::new(),
                 current : Rc::new(RefCell::new(DepPostProcs {
