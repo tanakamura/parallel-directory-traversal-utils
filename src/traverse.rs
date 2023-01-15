@@ -247,9 +247,7 @@ fn run_1task(
             st.pend_fifo.push_back(cur_dep.clone());
             st.current = cur_dep;
 
-            println!("traverse start {:?}", path);
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
-            println!("traverse finish {:?}", path);
 
             if let Ok(_) = err {
                 let mut cur = st.current.borrow_mut();
@@ -301,17 +299,14 @@ impl TraverseThread {
                         let chan = top_mut.pred.get_wait_channel();
                         if let Some(chan) = chan {
                             select! {
-                                recv(chan) -> v => {v?; println!("prev compl");continue},
-                                recv(tq.1) -> v => {tv = v?; println!("recv1"); break;}
+                                recv(chan) -> v => {v?; continue;},
+                                recv(tq.1) -> v => {tv = v?;  break;}
                             }
                         } else {
-                            println!("recv2 {}", tid);
                             continue;
                         }
                     } else {
-                        println!("recv1 {}", tid);
                         tv = tq.1.recv()?;
-                        println!("recv1xx {}", tid);
                         break;
                     }
                 }
