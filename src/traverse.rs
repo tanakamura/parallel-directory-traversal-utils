@@ -8,6 +8,8 @@ use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::thread;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
@@ -31,6 +33,7 @@ fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
 }
 
 struct DepPostProcs {
+    current: bool,
     pred: events::DepChain,
     succ: events::DepChain,
     postprocs: Vec<TaskPostProc>,
@@ -38,9 +41,20 @@ struct DepPostProcs {
 
 struct TraverseState<'a> {
     opts: &'a Options,
-    pend_fifo: std::collections::VecDeque<DepPostProcs>,
+    pend_fifo: std::collections::VecDeque<Rc<RefCell<DepPostProcs>>>,
     cur_postprocs: Vec<TaskPostProc>,
     cur_pred: events::DepChain,
+}
+
+impl DepPostProcs {
+    fn flush_postprocs(&mut self) -> Result<(),error::E> {
+        let mut tmp_vec = Vec::new();
+        std::mem::swap(&mut tmp_vec, &mut self.postprocs);
+        for t in tmp_vec {
+            run_postproc_task(t)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'a> TraverseState<'a> {
@@ -75,12 +89,18 @@ impl<'a> TraverseState<'a> {
     fn pump(&mut self) -> Result<bool, error::E> {
         loop {
             if let Some(v) = self.pend_fifo.get(0) {
+                let mut v = v.borrow_mut();
                 if v.pred.is_completed() {
-                    let mut v = self.pend_fifo.pop_front().unwrap();
-                    for t in v.postprocs {
-                        run_postproc_task(t)?;
+                    if v.current {
+                        v.flush_postprocs()?;
+                    } else {
+                        drop(v);
+                        let v = self.pend_fifo.pop_front().unwrap();
+                        let mut v = v.borrow_mut();
+
+                        v.flush_postprocs()?;
+                        v.succ.complete()
                     }
-                    v.succ.complete()
                 } else {
                     return Ok(false);
                 }
@@ -102,13 +122,14 @@ impl<'a> TraverseState<'a> {
         std::mem::swap(&mut self.cur_postprocs, &mut next_vec);
 
         let push_val = DepPostProcs {
+            current: false,
             pred: new_task_succ,
             succ: new_task_pred.clone(),
             postprocs: next_vec,
         };
 
         self.cur_postprocs = Vec::new();
-        self.pend_fifo.push_back(push_val);
+        self.pend_fifo.push_back(Rc::new(RefCell::new(push_val)));
 
         (new_task_pred, self.cur_pred.clone())
     }
@@ -226,12 +247,13 @@ fn run_1task(
                 std::mem::swap(&mut procs, &mut st.cur_postprocs);
 
                 let push_val = DepPostProcs {
-                    pred: pred,
+                    current: true,
+                    pred,
                     succ: dep_succ,
                     postprocs: procs,
                 };
 
-                st.pend_fifo.push_back(push_val);
+                st.pend_fifo.push_back(Rc::new(RefCell::new(push_val)));
 
                 err = st.pump().map(|_| ());
             }
@@ -255,7 +277,7 @@ impl TraverseThread {
             let mut st = TraverseState {
                 opts: &opts,
                 pend_fifo: std::collections::VecDeque::new(),
-                cur_pred: events::DepChain::new(), // dummy
+                cur_pred: events::DepChain::new_dummy(), // dummy
                 cur_postprocs: Vec::new(),
             };
 
@@ -271,15 +293,13 @@ impl TraverseThread {
                     st.pump()?;
 
                     if let Some(top) = st.pend_fifo.get_mut(0) {
-                        let chan = top.pred.get_wait_channel();
+                        let mut top_mut = top.borrow_mut();
+                        let chan = top_mut.pred.get_wait_channel();
                         if let Some(chan) = chan {
-                            let v = chan.recv()?;
-                            println!("prev complete {}", tid);
-                            continue;
-                        //                            select! {
-                        //                                recv(chan) -> v => {v?; println!("prev compl");continue},
-                        //                                recv(tq.1) -> v => {tv = v?; println!("recv1"); break;}
-                        //                            }
+                            select! {
+                                recv(chan) -> v => {v?; println!("prev compl");continue},
+                                recv(tq.1) -> v => {tv = v?; println!("recv1"); break;}
+                            }
                         } else {
                             println!("recv2 {}", tid);
                             continue;

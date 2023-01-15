@@ -29,36 +29,56 @@ impl DepChainV {
 }
 
 #[derive(Clone, Debug)]
-pub struct DepChain {
-    pub v: Arc<Mutex<DepChainV>>,
-    pub pred: Option<Box<DepChain>>, // None for first chain
+pub enum DepChain {
+    Value {
+        v: Arc<Mutex<DepChainV>>,
+        pred: Option<Box<DepChain>>, // None for first chain
+    },
+    Dummy,
 }
 
 impl DepChain {
     pub fn get_wait_channel(&mut self) -> Option<crossbeam_channel::Receiver<()>> {
-        let mut v = self.v.lock().unwrap();
-        if v.completed {
-            return None;
-        }
+        match self {
+            DepChain::Value { v, pred:_ } => {
+                let mut v = v.lock().unwrap();
+                if v.completed {
+                    return None;
+                }
 
-        Some(v.get_channel_locked().1)
+                Some(v.get_channel_locked().1)
+            },
+            DepChain::Dummy => { None }
+        }
     }
 
     pub fn wait(&self) {
-        let mut v = self.v.lock().unwrap();
+        match self {
+            DepChain::Value { v, pred:_ } => {
+                let mut v = v.lock().unwrap();
 
-        if v.completed {
-            return;
+                if v.completed {
+                    return;
+                }
+
+                let rx = v.get_channel_locked().1;
+                drop(v);
+
+                rx.recv().unwrap();
+            },
+            DepChain::Dummy => { }
         }
-
-        let rx = v.get_channel_locked().1;
-        drop(v);
-
-        rx.recv().unwrap();
     }
 
     pub fn is_completed(&self) -> bool {
-        self.v.lock().unwrap().completed
+        match self {
+            DepChain::Value { v, pred:_ } => {
+                v.lock().unwrap().completed
+            },
+            DepChain::Dummy => {
+                true
+            }
+        }
     }
 
     pub fn new() -> DepChain {
@@ -67,22 +87,32 @@ impl DepChain {
             waiter: None,
         };
 
-        DepChain {
+        DepChain::Value {
             v: Arc::new(Mutex::new(v)),
             pred: None,
         }
     }
 
+    pub fn new_dummy() -> DepChain {
+        DepChain::Dummy
+    }
+
     pub fn complete(&mut self) {
-        let mut v = self.v.lock().unwrap();
-        let mut v = v.deref_mut();
-        v.completed = true;
+        match self {
+            DepChain::Dummy => {},
+            DepChain::Value {v, pred:_} => {
+                let mut v = v.lock().unwrap();
+                let mut v = v.deref_mut();
+                v.completed = true;
 
-        let mut b = None;
-        std::mem::swap(&mut b, &mut v.waiter);
+                let mut b = None;
+                std::mem::swap(&mut b, &mut v.waiter);
 
-        if let Some(w) = b {
-            w.0.send(()).unwrap();
+                if let Some(w) = b {
+                    w.0.send(()).unwrap();
+                }
+            }
         }
+
     }
 }
