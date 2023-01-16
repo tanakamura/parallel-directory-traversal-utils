@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::rc::Rc;
 use std::cell::RefCell;
+use events::CompleteTestResult;
 
 pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
@@ -77,9 +78,9 @@ impl<'a> TraverseState<'a> {
     }
 
     fn push_postproc(&mut self, t: TaskPostProc) -> Result<(), error::E> {
-        self.pump()?;
+        self.pump(false)?;
         let mut cur = self.current.borrow_mut();
-        if cur.pred.is_completed() {
+        if cur.pred.is_completed(false).completed {
             cur.flush_postprocs()?;
             run_postproc_task(t)?;
         } else {
@@ -88,15 +89,16 @@ impl<'a> TraverseState<'a> {
         Ok(())
     }
 
-    fn pump(&mut self) -> Result<bool, error::E> {
+    fn pump(&mut self, get_wait_channel: bool ) -> Result<CompleteTestResult, error::E> {
         loop {
             if let Some(v) = self.pend_fifo.get(0) {
                 let mut v = v.borrow_mut();
                 println!("{}: pump top={:?}", self.tid, v.pred.get_ptr());
-                if v.pred.is_completed() {
+                let r = v.pred.is_completed(get_wait_channel);
+                if r.completed {
                     if v.current {
                         v.flush_postprocs()?;
-                        return Ok(false);
+                        return Ok(CompleteTestResult { completed: true, wait_chan: None })
                     } else {
                         drop(v);
                         let v = self.pend_fifo.pop_front().unwrap();
@@ -106,11 +108,11 @@ impl<'a> TraverseState<'a> {
                         v.succ.complete()
                     }
                 } else {
-                    return Ok(false);
+                    return Ok(r);
                 }
             } else {
                 self.flush_cur_postprocs()?;
-                return Ok(true);
+                return Ok(CompleteTestResult { completed: true, wait_chan:None } );
             }
         }
     }
@@ -184,7 +186,7 @@ fn traverse_dir(
 
                         match nt {
                             Ok(t) => {
-                                st.pump()?;
+                                st.pump(false)?;
                                 let (new_pred, new_succ) = st.gen_chain();
 
                                 let read_child = Task::ReadDir {
@@ -257,7 +259,7 @@ fn run_1task(
                 let mut cur = st.current.borrow_mut();
                 cur.fixup(dep_succ);
                 drop(cur);
-                err = st.pump().map(|_| ());
+                err = st.pump(false).map(|_| ());
             }
 
             if let Err(e) = err {
@@ -297,22 +299,17 @@ impl TraverseThread {
                 let tv;
 
                 loop {
-                    st.pump()?;
+                    let pr = st.pump(true)?;
 
-                    if let Some(top) = st.pend_fifo.get_mut(0) {
-                        let mut top_mut = top.borrow_mut();
-                        let chan = top_mut.pred.get_wait_channel();
-                        if let Some(chan) = chan {
-                            select! {
-                                recv(chan) -> v => {v?; continue;},
-                                recv(tq.1) -> v => {tv = v?;  break;}
-                            }
-                        } else {
-                            continue;
-                        }
-                    } else {
+                    if pr.completed {
                         tv = tq.1.recv()?;
                         break;
+                    } else {
+                        let chan = pr.wait_chan.unwrap();
+                        select! {
+                            recv(chan) -> v => {v?; continue;},
+                            recv(tq.1) -> v => {tv = v?;  break;}
+                        }
                     }
                 }
 

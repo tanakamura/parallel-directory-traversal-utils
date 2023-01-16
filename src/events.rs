@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref,DerefMut};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -17,14 +17,12 @@ impl DepChainV {
         crossbeam_channel::Sender<()>,
         crossbeam_channel::Receiver<()>,
     ) {
-        if let Some(w) = &self.waiter {
-            return w.clone();
+        if self.waiter.is_none() {
+            let ret = crossbeam_channel::bounded(0);
+            self.waiter = Some(ret);
         }
 
-        let ret = crossbeam_channel::bounded(0);
-        self.waiter = Some(ret.clone());
-
-        return ret;
+        return self.waiter.clone().unwrap();
     }
 }
 
@@ -37,50 +35,43 @@ pub enum DepChain {
     Dummy,
 }
 
+pub type WaitChan = crossbeam_channel::Receiver<()>;
+
+pub struct CompleteTestResult {
+    pub completed: bool,
+    pub wait_chan: Option<WaitChan>
+}
+
 impl DepChain {
-    pub fn get_wait_channel(&mut self) -> Option<crossbeam_channel::Receiver<()>> {
+    pub fn is_completed(&self, get_channel: bool) -> CompleteTestResult {
         match self {
             DepChain::Value { v, pred:_ } => {
                 let mut v = v.lock().unwrap();
                 if v.completed {
-                    return None;
+                    CompleteTestResult { completed:true, wait_chan: None}
+                } else {
+                    if get_channel {
+                        let chan = v.get_channel_locked().1;
+                        CompleteTestResult { completed:false, wait_chan: Some(chan)}
+                    } else {
+                        CompleteTestResult { completed:false, wait_chan: None }
+                    }
                 }
-
-                Some(v.get_channel_locked().1)
             },
-            DepChain::Dummy => { None }
+            DepChain::Dummy => {
+                CompleteTestResult { completed:true, wait_chan: None }
+            }
         }
     }
 
     pub fn wait(&self) {
-        match self {
-            DepChain::Value { v, pred:_ } => {
-                let mut v = v.lock().unwrap();
+        let cr = self.is_completed(true);
 
-                if v.completed {
-                    return;
-                }
-
-                let rx = v.get_channel_locked().1;
-                drop(v);
-
-                rx.recv().unwrap();
-            },
-            DepChain::Dummy => { }
+        if cr.completed {
+            return;
         }
-    }
 
-    pub fn is_completed(&self) -> bool {
-        match self {
-            DepChain::Value { v, pred:_ } => {
-                let v = v.lock().unwrap();
-                println!("is_complete {:?}", v.deref() as *const DepChainV);
-                v.completed
-            },
-            DepChain::Dummy => {
-                true
-            }
-        }
+        cr.wait_chan.unwrap().recv().unwrap();
     }
 
     pub fn new() -> DepChain {
@@ -123,8 +114,8 @@ impl DepChain {
         match self {
             DepChain::Dummy => std::ptr::null(),
             DepChain::Value {v, pred:_} => {
-                let mut v = v.lock().unwrap();
-                let mut v = v.deref_mut();
+                let v = v.lock().unwrap();
+                let v = v.deref();
                 v as *const DepChainV
             }
         }
