@@ -30,7 +30,7 @@ impl E {
         match self {
             E::OpenDirError { path: _, eno } => match eno {
                 nix::errno::Errno::EACCES => {
-                    dbg!("ignore error", &self);
+                    eprintln!("ignored error {:?}", self);
                     opts.ignore_eaccess
                 }
                 _ => false,
