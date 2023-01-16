@@ -3,14 +3,14 @@ use crate::error;
 use crate::events;
 use crate::options::{Options, Order};
 use crossbeam::channel::{select, Receiver, Sender};
+use events::CompleteTestResult;
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::rc::Rc;
-use std::cell::RefCell;
-use events::CompleteTestResult;
+use std::thread;
 
 pub struct TraverseThread {
     thread: std::thread::JoinHandle<Result<(), error::E>>,
@@ -33,7 +33,7 @@ fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
     Ok(())
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct ReorderKey(Vec<usize>);
 
 struct DepPostProcs {
@@ -41,16 +41,16 @@ struct DepPostProcs {
     pred: events::DepChain,
     succ: events::DepChain,
     postprocs: Vec<TaskPostProc>,
-    key: ReorderKey
+    key: ReorderKey,
 }
 
 impl PartialOrd for DepPostProcs {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.key.0.cmp(& other.key.0))
+        Some(self.key.0.cmp(&other.key.0))
     }
 }
 
-impl Ord for DepPostProcs{
+impl Ord for DepPostProcs {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let lenl = self.key.0.len();
         let lenr = other.key.0.len();
@@ -59,25 +59,25 @@ impl Ord for DepPostProcs{
         for i in 0..len {
             match self.key.0[i].cmp(&other.key.0[i]) {
                 std::cmp::Ordering::Equal => (),
-                non_eq => return non_eq
+                non_eq => return non_eq,
             }
         }
 
-        lenr.cmp(&lenl)         // longer vector is lesser
+        lenr.cmp(&lenl) // longer vector is lesser
     }
 }
 
 impl PartialEq for DepPostProcs {
     fn eq(&self, other: &Self) -> bool {
-        self.key.0.eq(& other.key.0)
+        self.key.0.eq(&other.key.0)
     }
 }
-impl Eq for DepPostProcs{}
+impl Eq for DepPostProcs {}
 
 impl ReorderKey {
     fn inc(&mut self) {
         let len = self.0.len();
-        self.0[len-1] += 1;
+        self.0[len - 1] += 1;
     }
 
     fn push(&mut self) {
@@ -90,11 +90,11 @@ struct TraverseState<'a> {
     pendings: std::collections::BTreeSet<Rc<RefCell<DepPostProcs>>>,
     current: Rc<RefCell<DepPostProcs>>,
     tid: usize,
-    current_key: ReorderKey
+    current_key: ReorderKey,
 }
 
 impl DepPostProcs {
-    fn flush_postprocs(&mut self) -> Result<(),error::E> {
+    fn flush_postprocs(&mut self) -> Result<(), error::E> {
         let tmp_vec = std::mem::take(&mut self.postprocs);
         for t in tmp_vec {
             run_postproc_task(t)?;
@@ -133,7 +133,7 @@ impl<'a> TraverseState<'a> {
         Ok(())
     }
 
-    fn pump(&mut self, get_wait_channel: bool ) -> Result<CompleteTestResult, error::E> {
+    fn pump(&mut self, get_wait_channel: bool) -> Result<CompleteTestResult, error::E> {
         loop {
             if let Some(v) = self.pendings.first() {
                 let mut v = v.borrow_mut();
@@ -142,9 +142,11 @@ impl<'a> TraverseState<'a> {
                 if r.completed {
                     if v.current {
                         v.flush_postprocs()?;
-                        return Ok(CompleteTestResult { completed: true, wait_chan: None })
+                        return Ok(CompleteTestResult {
+                            completed: true,
+                            wait_chan: None,
+                        });
                     } else {
-
                         drop(v);
                         let v = self.pendings.pop_first().unwrap();
                         let mut v = v.borrow_mut();
@@ -157,7 +159,10 @@ impl<'a> TraverseState<'a> {
                 }
             } else {
                 self.flush_cur_postprocs()?;
-                return Ok(CompleteTestResult { completed: true, wait_chan:None } );
+                return Ok(CompleteTestResult {
+                    completed: true,
+                    wait_chan: None,
+                });
             }
         }
     }
@@ -244,7 +249,7 @@ fn traverse_dir(
                                     path: crate::pathstr::entry_to_path(&e).to_owned(),
                                     dep_pred: new_pred,
                                     dep_succ: new_succ,
-                                    key: new_key
+                                    key: new_key,
                                 };
 
                                 t.send(read_child).unwrap();
@@ -305,7 +310,7 @@ fn run_1task(
                 pred: dep_pred,
                 succ: crate::events::DepChain::new_dummy(),
                 postprocs: Vec::new(),
-                key: key.clone()
+                key: key.clone(),
             }));
 
             key.inc();
@@ -344,14 +349,14 @@ impl TraverseThread {
                 tid,
                 opts: &opts,
                 pendings: std::collections::BTreeSet::new(),
-                current : Rc::new(RefCell::new(DepPostProcs {
+                current: Rc::new(RefCell::new(DepPostProcs {
                     current: true,
                     pred: crate::events::DepChain::new_dummy(),
                     succ: crate::events::DepChain::new_dummy(),
                     postprocs: Vec::new(),
-                    key: ReorderKey(vec![])
-                })),             // dummy, unused value
-                current_key: ReorderKey(vec![0])
+                    key: ReorderKey(vec![]),
+                })), // dummy, unused value
+                current_key: ReorderKey(vec![0]),
             };
 
             let tq = crossbeam::channel::bounded(1);
@@ -464,7 +469,7 @@ pub enum Task {
         path: PathBuf,
         dep_pred: events::DepChain,
         dep_succ: events::DepChain,
-        key: ReorderKey
+        key: ReorderKey,
     },
     #[cfg(test)]
     Nop,
@@ -485,7 +490,7 @@ pub fn traverse(t: &mut Traverser) -> Result<(), error::E> {
         path: t.opt.src_path.to_owned(),
         dep_pred: root_first,
         dep_succ: final_dep.clone(),
-        key: ReorderKey(vec![0])
+        key: ReorderKey(vec![0]),
     };
 
     let ft = tl.pop_free_thread()?;

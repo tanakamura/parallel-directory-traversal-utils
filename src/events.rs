@@ -1,4 +1,4 @@
-use std::ops::{Deref,DerefMut};
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -39,28 +39,38 @@ pub type WaitChan = crossbeam_channel::Receiver<()>;
 
 pub struct CompleteTestResult {
     pub completed: bool,
-    pub wait_chan: Option<WaitChan>
+    pub wait_chan: Option<WaitChan>,
 }
 
 impl DepChain {
     pub fn is_completed(&self, get_channel: bool) -> CompleteTestResult {
         match self {
-            DepChain::Value { v, pred:_ } => {
+            DepChain::Value { v, pred: _ } => {
                 let mut v = v.lock().unwrap();
                 if v.completed {
-                    CompleteTestResult { completed:true, wait_chan: None}
+                    CompleteTestResult {
+                        completed: true,
+                        wait_chan: None,
+                    }
                 } else {
                     if get_channel {
                         let chan = v.get_channel_locked().1;
-                        CompleteTestResult { completed:false, wait_chan: Some(chan)}
+                        CompleteTestResult {
+                            completed: false,
+                            wait_chan: Some(chan),
+                        }
                     } else {
-                        CompleteTestResult { completed:false, wait_chan: None }
+                        CompleteTestResult {
+                            completed: false,
+                            wait_chan: None,
+                        }
                     }
                 }
-            },
-            DepChain::Dummy => {
-                CompleteTestResult { completed:true, wait_chan: None }
             }
+            DepChain::Dummy => CompleteTestResult {
+                completed: true,
+                wait_chan: None,
+            },
         }
     }
 
@@ -92,8 +102,8 @@ impl DepChain {
 
     pub fn notify_complete(&mut self) {
         match self {
-            DepChain::Dummy => {},
-            DepChain::Value {v, pred:_} => {
+            DepChain::Dummy => {}
+            DepChain::Value { v, pred: _ } => {
                 let mut v = v.lock().unwrap();
                 let mut v = v.deref_mut();
                 v.completed = true;
@@ -113,7 +123,7 @@ impl DepChain {
     pub fn get_ptr(&self) -> *const DepChainV {
         match self {
             DepChain::Dummy => std::ptr::null(),
-            DepChain::Value {v, pred:_} => {
+            DepChain::Value { v, pred: _ } => {
                 let v = v.lock().unwrap();
                 let v = v.deref();
                 v as *const DepChainV
