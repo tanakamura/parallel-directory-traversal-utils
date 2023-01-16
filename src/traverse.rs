@@ -33,18 +33,53 @@ fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
     Ok(())
 }
 
+#[derive(Clone)]
+pub struct ReorderKey(Vec<usize>);
+
 struct DepPostProcs {
     current: bool,
     pred: events::DepChain,
     succ: events::DepChain,
     postprocs: Vec<TaskPostProc>,
+    key: ReorderKey
+}
+
+impl PartialOrd for DepPostProcs {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.key.0.cmp(& other.key.0))
+    }
+}
+
+impl Ord for DepPostProcs{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.0.cmp(& other.key.0)
+    }
+}
+
+impl PartialEq for DepPostProcs {
+    fn eq(&self, other: &Self) -> bool {
+        self.key.0.eq(& other.key.0)
+    }
+}
+impl Eq for DepPostProcs{}
+
+impl ReorderKey {
+    fn inc(&mut self) {
+        let len = self.0.len();
+        self.0[len-1] += 1;
+    }
+
+    fn push(&mut self) {
+        self.0.push(0);
+    }
 }
 
 struct TraverseState<'a> {
     opts: &'a Options,
     pend_fifo: std::collections::VecDeque<Rc<RefCell<DepPostProcs>>>,
     current: Rc<RefCell<DepPostProcs>>,
-    tid: usize
+    tid: usize,
+    current_key: ReorderKey
 }
 
 impl DepPostProcs {
@@ -117,7 +152,7 @@ impl<'a> TraverseState<'a> {
         }
     }
 
-    fn gen_chain(&mut self) -> (crate::events::DepChain, crate::events::DepChain) {
+    fn gen_chain(&mut self) -> (events::DepChain, events::DepChain, ReorderKey) {
         // (pred,succ)
 
         let new_task_pred = crate::events::DepChain::new();
@@ -127,7 +162,8 @@ impl<'a> TraverseState<'a> {
             current: true,
             pred: new_task_succ.clone(),
             succ: events::DepChain::new_dummy(),
-            postprocs: Vec::new()
+            postprocs: Vec::new(),
+            key: self.current_key.clone(),
         }));
 
         let mut cur = self.current.borrow_mut();
@@ -137,7 +173,11 @@ impl<'a> TraverseState<'a> {
         self.current = push_val.clone();
         self.pend_fifo.push_back(push_val);
 
-        (new_task_pred, new_task_succ)
+        let mut newkey = self.current_key.clone();
+        newkey.push();
+        self.current_key.inc();
+
+        (new_task_pred, new_task_succ, newkey)
     }
 }
 
@@ -187,13 +227,14 @@ fn traverse_dir(
                         match nt {
                             Ok(t) => {
                                 st.pump(false)?;
-                                let (new_pred, new_succ) = st.gen_chain();
+                                let (new_pred, new_succ, new_key) = st.gen_chain();
 
                                 let read_child = Task::ReadDir {
                                     parent_dir: Some(d.clone()),
                                     path: crate::pathstr::entry_to_path(&e).to_owned(),
                                     dep_pred: new_pred,
                                     dep_succ: new_succ,
+                                    key: new_key
                                 };
 
                                 t.send(read_child).unwrap();
@@ -240,14 +281,18 @@ fn run_1task(
             path,
             dep_pred,
             dep_succ,
+            mut key,
         } => {
             let cur_dep = Rc::new(RefCell::new(DepPostProcs {
                 current: true,
                 pred: dep_pred,
                 succ: crate::events::DepChain::new_dummy(),
-                postprocs: Vec::new()
+                postprocs: Vec::new(),
+                key: key.clone()
             }));
 
+            key.inc();
+            st.current_key = key;
             st.pend_fifo.push_back(cur_dep.clone());
             st.current = cur_dep;
 
@@ -286,8 +331,10 @@ impl TraverseThread {
                     current: true,
                     pred: crate::events::DepChain::new_dummy(),
                     succ: crate::events::DepChain::new_dummy(),
-                    postprocs: Vec::new()
-                }))             // dummy, unused value
+                    postprocs: Vec::new(),
+                    key: ReorderKey(vec![])
+                })),             // dummy, unused value
+                current_key: ReorderKey(vec![0])
             };
 
             let tq = crossbeam::channel::bounded(0);
@@ -395,6 +442,7 @@ pub enum Task {
         path: PathBuf,
         dep_pred: events::DepChain,
         dep_succ: events::DepChain,
+        key: ReorderKey
     },
     #[cfg(test)]
     Nop,
@@ -415,6 +463,7 @@ pub fn traverse(t: &mut Traverser) -> Result<(), error::E> {
         path: t.opt.src_path.to_owned(),
         dep_pred: root_first,
         dep_succ: final_dep.clone(),
+        key: ReorderKey(vec![0])
     };
 
     let ft = tl.pop_free_thread()?;
