@@ -18,7 +18,7 @@ impl DepChainV {
         crossbeam_channel::Receiver<()>,
     ) {
         if self.waiter.is_none() {
-            let ret = crossbeam_channel::bounded(0);
+            let ret = crossbeam_channel::bounded(1);
             self.waiter = Some(ret);
         }
 
@@ -90,7 +90,7 @@ impl DepChain {
         DepChain::Dummy
     }
 
-    pub fn complete(&mut self) {
+    pub fn notify_complete(&mut self) {
         match self {
             DepChain::Dummy => {},
             DepChain::Value {v, pred:_} => {
@@ -98,7 +98,7 @@ impl DepChain {
                 let mut v = v.deref_mut();
                 v.completed = true;
 
-                println!("notify {:?}", v as *const DepChainV);
+                //println!("notify {:?}", v as *const DepChainV);
 
                 let mut b = None;
                 std::mem::swap(&mut b, &mut v.waiter);

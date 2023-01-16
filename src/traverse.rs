@@ -33,7 +33,7 @@ fn run_postproc_task(t: TaskPostProc) -> Result<(), error::E> {
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct ReorderKey(Vec<usize>);
 
 struct DepPostProcs {
@@ -52,7 +52,18 @@ impl PartialOrd for DepPostProcs {
 
 impl Ord for DepPostProcs{
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key.0.cmp(& other.key.0)
+        let lenl = self.key.0.len();
+        let lenr = other.key.0.len();
+
+        let len = std::cmp::min(lenl, lenr);
+        for i in 0..len {
+            match self.key.0[i].cmp(&other.key.0[i]) {
+                std::cmp::Ordering::Equal => (),
+                non_eq => return non_eq
+            }
+        }
+
+        lenr.cmp(&lenl)         // longer vector is lesser
     }
 }
 
@@ -76,7 +87,7 @@ impl ReorderKey {
 
 struct TraverseState<'a> {
     opts: &'a Options,
-    pend_fifo: std::collections::VecDeque<Rc<RefCell<DepPostProcs>>>,
+    pendings: std::collections::BTreeSet<Rc<RefCell<DepPostProcs>>>,
     current: Rc<RefCell<DepPostProcs>>,
     tid: usize,
     current_key: ReorderKey
@@ -99,8 +110,6 @@ impl DepPostProcs {
 
 impl<'a> TraverseState<'a> {
     fn flush_cur_postprocs(&mut self) -> Result<(), error::E> {
-        assert!(self.pend_fifo.len() == 0);
-
         let mut cur = self.current.borrow_mut();
 
         let mut v = Vec::new();
@@ -126,21 +135,22 @@ impl<'a> TraverseState<'a> {
 
     fn pump(&mut self, get_wait_channel: bool ) -> Result<CompleteTestResult, error::E> {
         loop {
-            if let Some(v) = self.pend_fifo.get(0) {
+            if let Some(v) = self.pendings.first() {
                 let mut v = v.borrow_mut();
-                println!("{}: pump top={:?}", self.tid, v.pred.get_ptr());
+                //println!("{}: pump top={:?}, key={:?}", self.tid, v.pred.get_ptr(), v.key);
                 let r = v.pred.is_completed(get_wait_channel);
                 if r.completed {
                     if v.current {
                         v.flush_postprocs()?;
                         return Ok(CompleteTestResult { completed: true, wait_chan: None })
                     } else {
+
                         drop(v);
-                        let v = self.pend_fifo.pop_front().unwrap();
+                        let v = self.pendings.pop_first().unwrap();
                         let mut v = v.borrow_mut();
 
                         v.flush_postprocs()?;
-                        v.succ.complete()
+                        v.succ.notify_complete()
                     }
                 } else {
                     return Ok(r);
@@ -171,7 +181,7 @@ impl<'a> TraverseState<'a> {
         drop(cur);
 
         self.current = push_val.clone();
-        self.pend_fifo.push_back(push_val);
+        self.pendings.insert(push_val);
 
         let mut newkey = self.current_key.clone();
         newkey.push();
@@ -193,7 +203,7 @@ fn traverse_dir(
         Dir::new_root(&path)
     };
 
-    println!("{}: traverse dir {:?}", st.tid, path);
+    //println!("{}: traverse dir {:?}", st.tid, path);
 
     match d {
         Err(e) => {
@@ -283,6 +293,13 @@ fn run_1task(
             dep_succ,
             mut key,
         } => {
+            //println!("{}: start path={:?}, pred={:?}, succ={:?}, key={:?}",
+            //         st.tid,
+            //         path,
+            //         dep_pred.get_ptr(),
+            //         dep_succ.get_ptr(),
+            //         key);
+
             let cur_dep = Rc::new(RefCell::new(DepPostProcs {
                 current: true,
                 pred: dep_pred,
@@ -293,12 +310,12 @@ fn run_1task(
 
             key.inc();
             st.current_key = key;
-            st.pend_fifo.push_back(cur_dep.clone());
+            st.pendings.insert(cur_dep.clone());
             st.current = cur_dep;
 
-            println!("{}:traverse start {:?}", st.tid, path);
+            //println!("{}:traverse start {:?} {:?}", st.tid, path, st.current_key);
             let mut err = traverse_dir(st, &free_thread_queue_rx, parent_dir.as_ref(), &path);
-            println!("{}:traverse finish {:?}", st.tid, path);
+            //println!("{}:traverse finish {:?}", st.tid, path);
 
             if let Ok(_) = err {
                 let mut cur = st.current.borrow_mut();
@@ -326,7 +343,7 @@ impl TraverseThread {
             let mut st = TraverseState {
                 tid,
                 opts: &opts,
-                pend_fifo: std::collections::VecDeque::new(),
+                pendings: std::collections::BTreeSet::new(),
                 current : Rc::new(RefCell::new(DepPostProcs {
                     current: true,
                     pred: crate::events::DepChain::new_dummy(),
@@ -337,7 +354,7 @@ impl TraverseThread {
                 current_key: ReorderKey(vec![0])
             };
 
-            let tq = crossbeam::channel::bounded(0);
+            let tq = crossbeam::channel::bounded(1);
             let mut ret: Result<(), error::E> = Ok(());
 
             loop {
@@ -346,12 +363,17 @@ impl TraverseThread {
                 let tv;
 
                 loop {
+                    //println!("{}: XX", st.tid);
                     let pr = st.pump(true)?;
 
                     if pr.completed {
+                        //println!("{}: pump cmplete", st.tid);
+
                         tv = tq.1.recv()?;
                         break;
                     } else {
+                        //println!("{}: pump pending", st.tid);
+
                         let chan = pr.wait_chan.unwrap();
                         select! {
                             recv(chan) -> v => {v?; continue;},
@@ -456,7 +478,7 @@ pub fn traverse(t: &mut Traverser) -> Result<(), error::E> {
     let final_dep = events::DepChain::new();
     let mut root_first = events::DepChain::new();
 
-    root_first.complete();
+    root_first.notify_complete();
 
     let read_root = Task::ReadDir {
         parent_dir: None,
