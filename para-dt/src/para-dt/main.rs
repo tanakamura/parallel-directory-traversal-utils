@@ -1,11 +1,7 @@
 use clap::Parser;
-
-mod dir;
-mod error;
-mod events;
-mod options;
-mod pathstr;
-mod traverse;
+use libpara_dt::traverse;
+use libpara_dt::error;
+use libpara_dt::options;
 
 fn main() -> Result<(), error::E> {
     let mut t = traverse::Traverser {
