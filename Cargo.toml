@@ -1,5 +1,6 @@
 [workspace]
 members = [
+        "stat-async",
         "libpara-dt",
         "para-dt",
 ]
